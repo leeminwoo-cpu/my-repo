@@ -1,0 +1,391 @@
+--- CloudShell
+aws ec2 create-key-pair --key-name my-key --query 'KeyMaterial' --output text > my-key.pem
+
+--- CloudFormation
+AWSTemplateFormatVersion: 2010-09-09
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      InstanceTenancy: default
+      Tags:
+        - Key: Name
+          Value: my-vpc
+  SubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: ap-northeast-2a
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.0.0/20
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: my-subnet-2a
+  SubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: ap-northeast-2b
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.16.0/20
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: my-subnet-2b
+  SubnetC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: ap-northeast-2c
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.32.0/20
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: my-subnet-2c
+  SubnetD:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: ap-northeast-2d
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.48.0/20
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: my-subnet-2d
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: my-igw
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+  RouteTableA:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: my-rtb
+  InternetRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGateway
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+      RouteTableId: !Ref RouteTableA
+  SubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref RouteTableA
+      SubnetId: !Ref SubnetA
+  SubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref RouteTableA
+      SubnetId: !Ref SubnetB
+  SubnetCRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref RouteTableA
+      SubnetId: !Ref SubnetC
+  SubnetDRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref RouteTableA
+      SubnetId: !Ref SubnetD
+
+--- IAM
+역할 생성
+
+--- Lambda
+import boto3
+import os
+import sys
+import uuid
+from urllib.parse import unquote_plus
+from PIL import Image
+import PIL.Image
+
+s3_client = boto3.client('s3')
+
+def resize_image(image_path, resized_path):
+    with Image.open(image_path) as image:
+        image.thumbnail(tuple(x / 2 for x in image.size))
+        image.save(resized_path)
+
+def lambda_handler(event, context):
+    for record in event['Records']:
+        bucket = record['s3']['bucket']['name']
+        key = unquote_plus(record['s3']['object']['key'])
+        tmpkey = key.replace('/', '')
+        download_path = '/tmp/{}{}'.format(uuid.uuid4(), tmpkey)
+        upload_path = '/tmp/resized-{}'.format(tmpkey)
+        s3_client.download_file(bucket, key, download_path)
+        resize_image(download_path, upload_path)
+        s3_client.upload_file(upload_path, '{}-resized'.format(bucket), key)
+
+--- 코드 설명
+
+1. `import` 문은 필요한 라이브러리를 가져옵니다.
+   - `boto3`: AWS SDK를 사용하여 AWS 서비스와 상호작용하기 위해 사용됩니다.
+   - `os`, `sys`, `uuid`: 운영체제 관련 작업 및 고유한 식별자 생성에 사용됩니다.
+   - `urllib.parse.unquote_plus`: URL 디코딩을 위해 사용됩니다.
+   - `PIL`, `PIL.Image`: Python Imaging Library로 이미지 처리를 위해 사용됩니다.
+
+2. `boto3.client('s3')`를 통해 Amazon S3 클라이언트를 생성합니다.
+
+3. `resize_image` 함수는 이미지를 리사이징합니다.
+   - `image_path`로 지정된 원본 이미지를 열고, 해당 이미지를 `Image.open()`을 사용하여 PIL 이미지 객체로 읽어옵니다.
+   - `thumbnail()` 메서드를 사용하여 이미지의 크기를 줄입니다. 여기서는 원본 이미지 크기의 절반으로 조절됩니다.
+   - 조절된 이미지를 `resized_path`에 저장합니다.
+
+4. `lambda_handler` 함수는 AWS Lambda 함수의 진입점입니다. Lambda 함수는 이벤트를 받아들이고 처리하는 역할을 합니다.
+   - 이벤트의 각 레코드를 반복하여 처리합니다.
+   - 레코드에서 버킷 이름과 키를 추출합니다.
+   - 키에서 슬래시(`/`)를 제거한 후, 고유한 파일 이름을 생성하여 다운로드 및 업로드 경로를 설정합니다.
+   - `s3_client.download_file()`을 사용하여 S3에서 이미지를 다운로드합니다.
+   - `resize_image()` 함수를 사용하여 이미지를 리사이징합니다.
+   - 리사이징된 이미지를 S3에 업로드합니다.
+
+해당 코드는 AWS Lambda 함수로 배포되어 S3 버킷에 이미지가 업로드될 때마다 자동으로 실행되어 이미지를 리사이징하고 리사이징된 이미지를 다른 버킷에 업로드하는 작업을 수행합니다.
+
+--- CloudWatch
+sudo dnf install -y amazon-cloudwatch-agent
+sudo vi /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+{
+  "logs": {
+    "logs_collected": {
+      "files": {
+        "collect_list": [
+          {
+            "file_path": "/var/log/httpd/access_log",
+            "log_group_name": "/aws/httpd/access",
+            "log_stream_name": "{instance_id}",
+            "timestamp_format": "%d/%b/%Y:%H:%M:%S %z",
+            "multi_line_start_pattern": "^[\\d]{1,3}\\."
+          },
+          {
+            "file_path": "/var/log/httpd/error_log",
+            "log_group_name": "/aws/httpd/error",
+            "log_stream_name": "{instance_id}",
+            "timestamp_format": "%a %b %d %H:%M:%S.%f %Y"
+          }
+        ]
+      }
+    }
+  }
+}
+
+sudo systemctl enable --now amazon-cloudwatch-agent
+
+--- GitHub
+git clone https://github.com/leeminwoo-cpu/my-repo.git
+cd my-repo
+vi hello.txt
+git add .
+git status
+git config --global user.email "you@example.com"
+git config --global user.name "Your Name"
+git commit -m "Uploading New File"
+git push
+
+--- CodeBuild
+
+npm install vue # npm은 Node.js의 패키지 관리자로, Node.js로 작성된 패키지들을 설치하고 관리하는 데 사용, Vue.js는 사용자 인터페이스를 만들기 위한 진보적인 프런트엔드 프레임워크 중 하나
+sudo npm install --global vue-cli
+vue init webpack
+? Generate project in current directory? (Y/n) y
+? Project name (my-repo)
+? Project description (A Vue.js project)
+? Author (Your Name <you@example.com>)
+? Vue build standalone
+? Install vue-router? (Y/n) y
+? Use ESLint to lint your code? (Y/n) y
+? Set up unit tests (Y/n) y
+? Setup e2e tests with Nightwatch? (Y/n) y
+? Should we run `npm install` for you after the project has been created? (recommended) npm
+
+ls
+git add .
+git status
+git commit -m "Uploading webpack Files"
+git push
+
+--- S3 정적 웹사이트 구성
+
+{
+    "Version": "2012-10-17",
+    "Id": "Policy1711541395517",
+    "Statement": [
+        {
+            "Sid": "Stmt1711541392381",
+            "Effect": "Allow",
+            "Principal": "*",
+            "Action": [
+                "s3:Get*",
+                "s3:List*"
+            ],
+            "Resource": "arn:aws:s3:::johnlee0405/*"
+        }
+    ]
+}
+
+vi buildspec.yml
+
+version: 0.2
+
+phases:
+  install:
+    runtime-versions:
+      nodejs: 20
+    commands:
+      - npm i npm@latest -g
+  pre_build:
+    commands:
+      - npm install
+  build:
+    commands:
+      - npm run build
+  post_build:
+    commands:
+      - aws s3 sync ./dist s3://johnlee0405
+
+git add .
+git status
+git commit -m "Uploading buildspec.yml"
+git push
+
+vi ./src/components/HelloWorld.vue
+
+--- 코드 설명
+
+이 코드는 AWS CodeBuild에서 사용되는 빌드 스펙(Buildspec) 파일의 예시입니다. 빌드 스펙 파일은 AWS CodeBuild에서 빌드 프로세스를 정의하는 데 사용됩니다.
+
+여기서 사용된 구성은 다음과 같습니다:
+
+1. `version`: 빌드 스펙의 버전을 지정합니다. 여기서는 0.2 버전을 사용하고 있습니다.
+
+2. `phases`: 빌드 프로세스를 여러 단계로 나누어 정의합니다.
+   - `install`: 빌드에 필요한 런타임 버전 및 패키지를 설치하는 단계입니다. 이 경우 Node.js 18 버전을 사용하고, `npm` 패키지를 최신 버전으로 업데이트합니다.
+   - `pre_build`: 실제 빌드가 시작되기 전에 수행해야 할 추가적인 명령을 실행하는 단계입니다. 여기서는 프로젝트에 필요한 의존성을 설치합니다.
+   - `build`: 프로젝트를 빌드하는 주요 단계입니다. 이 경우에는 `npm run build` 명령을 실행하여 프로젝트를 빌드합니다.
+   - `post_build`: 빌드 후 추가적인 작업을 수행하는 단계입니다. 이 경우에는 빌드된 애플리케이션을 AWS S3로 배포합니다.
+
+3. `commands`: 각 단계에서 실행할 명령을 정의합니다.
+   - `npm i npm@latest -g`: npm 패키지를 최신 버전으로 업데이트합니다.
+   - `npm install`: 프로젝트에 필요한 npm 패키지를 설치합니다.
+   - `npm run build`: 프로젝트를 빌드합니다.
+   - `aws s3 sync ./dist s3://johnlee2024`: 빌드된 애플리케이션을 현재 디렉토리의 `dist` 폴더에서 AWS S3 버킷인 `johnlee2024`로 동기화합니다.
+
+이 빌드 스펙 파일은 AWS CodeBuild에서 프로젝트를 빌드할 때 이러한 단계를 차례대로 수행하고, 빌드된 결과물을 AWS S3 버킷으로 배포합니다.
+
+git add .
+git commit -m "codebuild test commit"
+git push
+
+--- CodeDeploy
+IAM > 역할만들기 > CodeDeploy 사용 사례 선택 > AWSCodeDeployRole 권한 추가 > code-role
+IAM > 역할만들기 > EC2 사용 사례 선택 >  AmazonS3FullAccess, AWSCodeDeployFullAccess 권한 추가 > ec2-role
+
+--- EC2 생성 (deploy-ec2)
+
+#!/bin/bash
+dnf update -y
+dnf install -y ruby
+curl -O https://aws-codedeploy-ap-northeast-2.s3.amazonaws.com/latest/install
+chmod +x ./install
+sudo ./install auto
+
+--- CodePipeLine
+git clone https://github.com/netdoctor0405/my-pipe.git
+cd my-pipe
+vi index.html
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Sample Deployment</title>
+  <style>
+    body {
+      color: #ffffff;
+      background-color: #0188cc;
+      font-family: Arial, sans-serif;
+      font-size: 14px;
+    }
+    h1 {
+      font-size: 500%;
+      font-weight: normal;
+      margin-bottom: 0;
+    }
+    h2 {
+      font-size: 200%;
+      font-weight: normal;
+      margin-bottom: 0;
+    }
+  </style>
+</head>
+<body>
+  <div align="center">
+    <h1>Congratulations</h1>
+    <h2>This application was deployed using AWS CodePipeline.</h2>
+    <p>For next steps, read the <a href="http://aws.amazon.com/documentation/codedeploy">AWS CodeDeploy Documentation</a>.</p>
+  </div>
+</body>
+</html>
+
+vi appspec.yml
+version: 0.0
+os: linux
+files:
+  - source: /index.html
+    destination: /var/www/html/
+hooks:
+  BeforeInstall:
+    - location: scripts/install_dependencies
+      timeout: 300
+      runas: root
+    - location: scripts/start_server
+      timeout: 300
+      runas: root
+  ApplicationStop:
+    - location: scripts/stop_server
+      timeout: 300
+      runas: root
+
+mkdir scripts && cd $_
+vi install_dependencies
+#!/bin/bash
+dnf install -y httpd
+
+vi start_server
+#!/bin/bash
+systemctl start httpd
+
+vi stop_server
+#!/bin/bash
+isExistApp = `pgrep httpd`
+if [[ -n $isExistApp ]]; then
+     systemctl stop httpd
+fi
+
+cd ..
+git add .
+git status
+git commit -m "CodePipeLine New File"
+git config --global user.email "you@example.com"
+git config --global user.name "Your Name"
+git push
+
+vi index.html
+
+git add .
+git commit -m "codepipe01"
+git push
+
+
